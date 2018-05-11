@@ -87,6 +87,17 @@ def open_intent_envelope(message):
                   intent_dict.get('optional'))
 
 
+def load_module_from_file(name, filename):
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader(name, filename)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    sys.modules[name] = mod
+    return mod
+
+
 def load_skill(skill_descriptor, emitter, skill_id, BLACKLISTED_SKILLS=None):
     """
         load skill from skill descriptor.
@@ -109,11 +120,9 @@ def load_skill(skill_descriptor, emitter, skill_id, BLACKLISTED_SKILLS=None):
         return None
     main_file = join(path, MainModule + '.py')
     try:
-        with open(main_file, 'rb') as fp:
-            skill_module = imp.load_module(
-                name.replace('.', '_'), fp, main_file,
-                ('.py', 'rb', imp.PY_SOURCE)
-            )
+        skill_module = load_module_from_file(
+            name.replace('.', '_').replace('-', '_'), main_file
+        )
         if (hasattr(skill_module, 'create_skill') and
                 callable(skill_module.create_skill)):
             # v2 skills framework
