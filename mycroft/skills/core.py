@@ -228,7 +228,7 @@ class SkillGUI(object):
 
     def build_message_type(self, event):
         """ Builds a message matching the output from the enclosure. """
-        return '{}.{}'.format(self.skill.skill_id, 'set')
+        return '{}.{}'.format(self.skill.skill_id, event)
 
     def setup_default_handlers(self):
         """ Sets the handlers for the default messages. """
@@ -247,7 +247,7 @@ class SkillGUI(object):
                 handler:        function to handle the event
         """
         msg_type = self.build_message_type(event)
-        self.skill.add_event(msg_type, self.gui_set)
+        self.skill.add_event(msg_type, handler)
 
     def set_on_gui_changed(self, callback):
         """ Registers a callback function to run when a value is
