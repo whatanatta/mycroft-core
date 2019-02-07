@@ -14,6 +14,7 @@
 #
 import sys
 import io
+import signal
 from math import ceil
 
 from .gui_server import start_qml_gui
@@ -31,6 +32,7 @@ from threading import Thread, Lock
 from mycroft.messagebus.client.ws import WebsocketClient
 from mycroft.messagebus.message import Message
 from mycroft.util.log import LOG
+from mycroft.configuration import Configuration
 
 import locale
 # Curses uses LC_ALL to determine how to display chars set it to system
@@ -40,6 +42,7 @@ preferred_encoding = locale.getpreferredencoding()
 
 bSimple = False
 bus = None  # Mycroft messagebus connection
+config = {}  # Will be populated by the Mycroft configuration
 event_thread = None
 history = []
 chat = []   # chat history, oldest at the lowest index
@@ -100,10 +103,29 @@ CLR_LOG_CMDMESSAGE = 0
 CLR_METER_CUR = 0
 CLR_METER = 0
 
+# Allow Ctrl+C catching...
+ctrl_c_was_pressed = False
+
+
+def ctrl_c_handler(signum, frame):
+    global ctrl_c_was_pressed
+    ctrl_c_was_pressed = True
+
+
+def ctrl_c_pressed():
+    global ctrl_c_was_pressed
+    if ctrl_c_was_pressed:
+        ctrl_c_was_pressed = False
+        return True
+    else:
+        return False
+
+
+signal.signal(signal.SIGINT, ctrl_c_handler)
+
 
 ##############################################################################
 # Helper functions
-
 
 def clamp(n, smallest, largest):
     """ Force n to be between smallest and largest, inclusive """
@@ -125,6 +147,25 @@ def handleNonAscii(text):
 # Settings
 
 config_file = os.path.join(os.path.expanduser("~"), ".mycroft_cli.conf")
+
+
+def load_mycroft_config(bus):
+    """ Load the mycroft config and connect it to updates over the messagebus.
+    """
+    Configuration.init(bus)
+    return Configuration.get()
+
+
+def connect_to_mycroft():
+    """ Connect to the mycroft messagebus and load and register config
+        on the bus.
+
+        Sets the bus and config global variables
+    """
+    global bus
+    global config
+    bus = connect_to_messagebus()
+    config = load_mycroft_config(bus)
 
 
 def load_settings():
@@ -149,7 +190,6 @@ def load_settings():
             show_meter = config["show_meter"]
     except Exception as e:
         LOG.info("Ignoring failed load of settings file")
-        LOG.exception(e)
 
 
 def save_settings():
@@ -396,8 +436,12 @@ def handle_utterance(event):
     set_screen_dirty()
 
 
-def connect():
-    # Once the websocket has connected, just watch it for speak events
+def connect(bus):
+    """ Run the mycroft messagebus referenced by bus.
+
+        Arguments:
+            bus:    Mycroft messagebus instance
+    """
     bus.run_forever()
 
 
@@ -1128,6 +1172,7 @@ def gui_main(stdscr):
     global history
     global screen_lock
     global show_gui
+    global config
 
     scr = stdscr
     init_screen()
@@ -1151,25 +1196,22 @@ def gui_main(stdscr):
     try:
         while True:
             set_screen_dirty()
+            c = 0
+            code = 0
 
             try:
-                # Don't block, this allows us to refresh the screen while
-                # waiting on initial messagebus connection, etc
-                scr.timeout(1)
-                c = scr.get_wch()   # unicode char or int for special keys
-                if c == -1:
-                    continue
-            except KeyboardInterrupt:
-                # User hit Ctrl+C to quit
-                if find_str:
-                    # End the find session
-                    find_str = None
-                    rebuild_filtered_log()
-                    continue  # Consumed the Ctrl+C, get next character
+                if ctrl_c_pressed():
+                    # User hit Ctrl+C. treat same as Ctrl+X
+                    c = 24
                 else:
-                    c = 24  # treat as Ctrl+X (Exit)
+                    # Don't block, this allows us to refresh the screen while
+                    # waiting on initial messagebus connection, etc
+                    scr.timeout(1)
+                    c = scr.get_wch()   # unicode char or int for special keys
+                    if c == -1:
+                        continue
             except curses.error:
-                # This happens in odd cases, such as when you Ctrl+Z suspend
+                # This happens in odd cases, such as when you Ctrl+Z
                 # the CLI and then resume.  Curses fails on get_wch().
                 continue
 
@@ -1258,7 +1300,7 @@ def gui_main(stdscr):
                     # Treat this as an utterance
                     bus.emit(Message("recognizer_loop:utterance",
                                      {'utterances': [line.strip()],
-                                      'lang': 'en-us'}))
+                                      'lang': config.get('lang', 'en-us')}))
                 hist_idx = -1
                 line = ""
             elif code == 16 or code == 545:  # Ctrl+P or Ctrl+Left (Previous)
@@ -1319,7 +1361,11 @@ def gui_main(stdscr):
                     # End the find session
                     find_str = None
                     rebuild_filtered_log()
+                elif line.startswith(":"):
+                    # cancel command mode
+                    line = ""
                 else:
+                    # exit CLI
                     break
             elif code > 31 and isinstance(c, str):
                 # Accept typed character in the utterance
@@ -1355,9 +1401,14 @@ def simple_cli():
 
 
 def connect_to_messagebus():
-    global bus
+    """ Connect to the mycroft messagebus and launch a thread handling the
+        connection.
+
+        Returns: WebsocketClient
+    """
     bus = WebsocketClient()  # Mycroft messagebus connection
 
-    event_thread = Thread(target=connect)
+    event_thread = Thread(target=connect, args=[bus])
     event_thread.setDaemon(True)
     event_thread.start()
+    return bus
